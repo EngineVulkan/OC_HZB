@@ -1,0 +1,117 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+struct InstanceData
+{
+	float3 boundsCenter;         // 3
+	float3 boundsExtents;        // 6
+};
+cbuffer CB
+{
+	float3 _CamPosition;
+	float4x4 _UNITY_MATRIX_MVP;
+	float _DetailSize;
+};
+
+StructuredBuffer<InstanceData> _InstanceDataBuffer;
+Texture2D<float4> _Input;
+RWTexture2D<float4> _Result;
+SamplerState sampler_Input;
+RWStructuredBuffer<uint> _IsVisable;
+RWStructuredBuffer<uint> _adfafdasdf;
+
+int GetDetailVisable(float3 minPos,float3 maxPos)
+{
+	float4 clipMinPos = mul(_UNITY_MATRIX_MVP, float4(minPos, 1));
+	float4 clipMaxPos = mul(_UNITY_MATRIX_MVP, float4(maxPos, 1));
+	clipMinPos.xyz = clipMinPos.xyz / clipMinPos.w;
+	clipMaxPos.xyz = clipMaxPos.xyz / clipMaxPos.w;
+	normalize(clipMinPos.xyz);
+	normalize(clipMaxPos.xyz);
+	float dist = distance(clipMinPos.xyz, clipMaxPos.xyz);
+	if (dist < _DetailSize)
+	{
+		return 0;
+	}
+	else
+		return 1;
+}
+
+inline uint IsVisibleAfterFrustumCulling(float4 clipPos)
+{
+	return (clipPos.z > clipPos.w
+		|| clipPos.x < -clipPos.w
+		|| clipPos.x > clipPos.w
+		|| clipPos.y < -clipPos.w
+		|| clipPos.y > clipPos.w)
+		? 0 : 1;
+}
+
+[numthreads(8,8,1)]
+void CSMain (
+	uint3 _dispatchThreadID : SV_DispatchThreadID, // DispatchThreadID  = dot(GroupID, numthreads) + GroupThreadId;)
+	uint _groupIndex : SV_GroupIndex, // uint GroupIndex = unique index of a thread inside a group
+	uint3 _groupID : SV_GroupID, // GroupID = index for each dimension inside a ThreadGroupCount 
+	uint3 _groupThreadID : SV_GroupThreadID// uint3 GroupThreadId = indices for each dimension inside a group of the current thread
+)
+{	
+	int id = ( 8*_groupID.y+_groupID.x)*64+ _groupIndex;
+	_adfafdasdf[id] = id;
+	InstanceData instance = _InstanceDataBuffer[id];
+
+	float3 minPos = instance.boundsCenter - instance.boundsExtents;
+	float3 maxPos = instance.boundsCenter + instance.boundsExtents;
+
+	float4 boxCorners[8];
+	boxCorners[0] = float4(minPos.x, minPos.y, minPos.z, 1.0);
+	boxCorners[1] = float4(minPos.x, minPos.y, maxPos.z, 1.0);
+	boxCorners[2] = float4(minPos.x, maxPos.y, minPos.z, 1.0);
+	boxCorners[3] = float4(minPos.x, maxPos.y, maxPos.z, 1.0);
+	boxCorners[4] = float4(maxPos.x, minPos.y, minPos.z, 1.0);
+	boxCorners[5] = float4(maxPos.x, minPos.y, maxPos.z, 1.0);
+	boxCorners[6] = float4(maxPos.x, maxPos.y, minPos.z, 1.0);
+	boxCorners[7] = float4(maxPos.x, maxPos.y, maxPos.z, 1.0);
+
+	bool isVisable = 1;
+	bool allDisable = 1;
+	bool isInFurstum = 0;
+	//判断是否会被遮挡
+
+	for (int i = 0; i < 8; i++)
+	{
+		boxCorners[i] = mul(_UNITY_MATRIX_MVP, boxCorners[i]);
+		//判断是否在视锥体内
+		if (IsVisibleAfterFrustumCulling(boxCorners[i]))
+			isInFurstum = 1;
+		boxCorners[i].xyz = boxCorners[i].xyz / boxCorners[i].w;
+		float2 uv = boxCorners[i].xy;
+		uv = uv * 0.5 + 0.5;//归一化到0-1
+		uv = 1 - uv;        //反转UV 0-1  to 1-0
+		
+		float depth = _Input.SampleLevel(sampler_Input, uv,0).r;
+		if (depth < boxCorners[i].z)
+		{
+			allDisable = 0;
+		}
+	}
+	if (!isInFurstum)
+		isVisable = 0;
+
+	if (allDisable)
+	{
+		isVisable = 0;
+	}
+
+	//细节裁剪，剔除占屏幕像素较少的物体
+	if (isVisable)
+	{
+		isVisable = GetDetailVisable(minPos,maxPos);
+	}
+
+	_IsVisable[id] = isVisable;
+
+	float2 xy = float2(_groupID.x, _groupID.y)+ _dispatchThreadID.xy;
+	_Result[xy] =  float4(_dispatchThreadID.x & _dispatchThreadID.y, (_dispatchThreadID.x & 15) / 15.0, (_dispatchThreadID.y & 15) / 15.0, 0.0);
+} 
