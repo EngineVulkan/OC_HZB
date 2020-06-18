@@ -225,6 +225,7 @@ GameObject:
   - component: {fileID: 534669907}
   - component: {fileID: 534669906}
   - component: {fileID: 534669908}
+  - component: {fileID: 534669909}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -309,9 +310,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_OcCaluteCS: {fileID: 7200000, guid: 8139c1a2c2cdeb74eb33753cb99748a7, type: 3}
-  m_mainCamera: {fileID: 534669904}
-  m_DetailSize: 0.1
-  m_DepthTexture: {fileID: 534669908}
+  m_depthTexture: {fileID: 534669908}
+  m_MainCamera: {fileID: 534669904}
+  m_DetailSize: 0.009
 --- !u!114 &534669907
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -326,6 +327,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_parent: {fileID: 489379107}
   m_instanceCount: 1024
+  m_testObj: {fileID: 1511345699}
 --- !u!114 &534669908
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -339,7 +341,30 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_MainCamera: {fileID: 534669904}
-  m_GetDephtMat: {fileID: 2100000, guid: 90443060993b7414da9e0e21d2363c9d, type: 2}
+  m_GenerateBufferShader: {fileID: 4800000, guid: f2b6cfa684ff78a48915d286e1803045,
+    type: 3}
+--- !u!114 &534669909
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 534669902}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 32b4d18a7c81e3546b47cf8662a9b8b4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_OcCaluteCS: {fileID: 7200000, guid: 44d88da5496f8f34e8bea6ee40496172, type: 3}
+  m_depthTexture: {fileID: 534669908}
+  m_MainCamera: {fileID: 534669904}
+  m_DetailSize: 0.01
+  m_OcCaluteKernelID: 0
+  m_depthArr: []
+  m_isVisableArr: []
+  m_isFirstFrame: 1
 --- !u!1 &1511345699
 GameObject:
   m_ObjectHideFlags: 0
@@ -425,7 +450,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1511345699}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 51.45455, y: -30.947132, z: 40.005688}
+  m_LocalPosition: {x: 0, y: 1, z: -0.5}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 0}

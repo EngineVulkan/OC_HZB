@@ -3,29 +3,31 @@
 
 // Create a RenderTexture with enableRandomWrite flag and set it
 // with cs.SetTexture
+
 struct InstanceData
 {
 	float3 boundsCenter;         // 3
 	float3 boundsExtents;        // 6
 };
+
+//RWTexture2D<float4> Result;
+Texture2D<float4> _DepthTexture;
+SamplerState sampler_DepthTexture;
+StructuredBuffer<InstanceData> _InstanceData;
+RWStructuredBuffer<uint> _IsVisable;
+RWStructuredBuffer<float> _Depth;
+
 cbuffer CB
 {
-	float3 _CamPosition;
-	float4x4 _UNITY_MATRIX_MVP;
+	float4x4 _UNITY_MATRIX_VP;
+	float2 _HiZTextureSize;
 	float _DetailSize;
 };
 
-StructuredBuffer<InstanceData> _InstanceDataBuffer;
-Texture2D<float4> _Input;
-RWTexture2D<float4> _Result;
-SamplerState sampler_Input;
-RWStructuredBuffer<uint> _IsVisable;
-RWStructuredBuffer<uint> _adfafdasdf;
-
-int GetDetailVisable(float3 minPos,float3 maxPos)
+int GetDetailVisable(float3 minPos, float3 maxPos)
 {
-	float4 clipMinPos = mul(_UNITY_MATRIX_MVP, float4(minPos, 1));
-	float4 clipMaxPos = mul(_UNITY_MATRIX_MVP, float4(maxPos, 1));
+	float4 clipMinPos = mul(_UNITY_MATRIX_VP, float4(minPos, 1));
+	float4 clipMaxPos = mul(_UNITY_MATRIX_VP, float4(maxPos, 1));
 	clipMinPos.xyz = clipMinPos.xyz / clipMinPos.w;
 	clipMaxPos.xyz = clipMaxPos.xyz / clipMaxPos.w;
 	normalize(clipMinPos.xyz);
@@ -49,20 +51,71 @@ inline uint IsVisibleAfterFrustumCulling(float4 clipPos)
 		? 0 : 1;
 }
 
-[numthreads(8,8,1)]
-void CSMain (
+inline uint IsVisibleAfterOcclusionCulling(InstanceData instance, float clipMinX, float clipMaxX, float clipMinY, float clipMaxY, float clipMinZ)
+{
+	// Change it to 0 - 1 range 
+	float2 minXY = float2(clipMinX, clipMinY) * 0.5 + 0.5;
+	float2 maxXY = float2(clipMaxX, clipMaxY) * 0.5 + 0.5;
+
+	// Calculate hi-Z buffer mip
+	int2 size = (maxXY - minXY) * _HiZTextureSize.xy;
+	float mip = ceil(log2(max(size.x, size.y)));
+	mip = clamp(mip, 0, 10);
+
+	// Texel footprint for the lower (finer-grained) level
+	float  level_lower = max(mip - 1, 0);
+	float2 scale = exp2(-level_lower);
+	float2 a = floor(minXY * scale);
+	float2 b = ceil(maxXY * scale);
+	float2 dims = b - a;
+
+	// Use the lower level if we only touch <= 2 texels in both dimensions
+	if (dims.x <= 2 && dims.y <= 2)
+	{
+		mip = level_lower;
+	}
+
+	// find the max depth
+	// Hi-Z approach that allows for more samples.
+	// https://www.gamedev.net/blogs/entry/2249535-hierarchical-z-buffer-occlusion-culling-updated-07152011/
+	//const   int numSamples = 24;
+	const   int   xSamples = 8; // numSamples + 1;
+	const   int   ySamples = 25; // numSamples + 1;
+	const  float    widthSS = (maxXY.x - minXY.x);
+	const  float   heightSS = (maxXY.y - minXY.y);
+	const  float      stepX = widthSS / xSamples;
+	const  float      stepY = heightSS / ySamples;
+
+	float HIZdepth = 1;
+	float yPos = minXY.y;
+	for (int y = 0; y < ySamples; ++y)
+	{
+		float xPos = minXY.x;
+		for (int x = 0; x < xSamples; ++x)
+		{
+			const float2 nCoords0 = float2(xPos, yPos);
+			HIZdepth = min(HIZdepth, _DepthTexture.SampleLevel(sampler_DepthTexture, nCoords0, mip).r);
+			xPos += stepX;
+		}
+		yPos += stepY;
+	}
+
+	return (1.0 - clipMinZ) >= HIZdepth - 0.000015; // last is an epsilon
+}
+[numthreads(256, 1, 1)]
+void CSMain(
 	uint3 _dispatchThreadID : SV_DispatchThreadID, // DispatchThreadID  = dot(GroupID, numthreads) + GroupThreadId;)
 	uint _groupIndex : SV_GroupIndex, // uint GroupIndex = unique index of a thread inside a group
 	uint3 _groupID : SV_GroupID, // GroupID = index for each dimension inside a ThreadGroupCount 
 	uint3 _groupThreadID : SV_GroupThreadID// uint3 GroupThreadId = indices for each dimension inside a group of the current thread
 )
-{	
-	int id = ( 8*_groupID.y+_groupID.x)*64+ _groupIndex;
-	_adfafdasdf[id] = id;
-	InstanceData instance = _InstanceDataBuffer[id];
+{
+	// TODO: insert actual code here!
+	int index = _dispatchThreadID.x;
+	InstanceData data = _InstanceData[index];
+	float3 minPos = data.boundsCenter - data.boundsExtents;
+	float3 maxPos = data.boundsCenter + data.boundsExtents;
 
-	float3 minPos = instance.boundsCenter - instance.boundsExtents;
-	float3 maxPos = instance.boundsCenter + instance.boundsExtents;
 
 	float4 boxCorners[8];
 	boxCorners[0] = float4(minPos.x, minPos.y, minPos.z, 1.0);
@@ -74,44 +127,74 @@ void CSMain (
 	boxCorners[6] = float4(maxPos.x, maxPos.y, minPos.z, 1.0);
 	boxCorners[7] = float4(maxPos.x, maxPos.y, maxPos.z, 1.0);
 
-	bool isVisable = 1;
-	bool allDisable = 1;
-	bool isInFurstum = 0;
-	//判断是否会被遮挡
+	uint isHasViable = 0;
+	uint isVisable = 0;
+	bool isInFrustum = 0;
+
+	float4 clipPos0 = mul(_UNITY_MATRIX_VP, boxCorners[0]);
+	clipPos0.xyz = clipPos0.xyz / clipPos0.w;
+	float clipMinX = clipPos0.x;
+	float clipMaxX = clipPos0.x;
+	float clipMinY = clipPos0.y;
+	float clipMaxY = clipPos0.y;
+	float clipMinZ = clipPos0.z;
 
 	for (int i = 0; i < 8; i++)
 	{
-		boxCorners[i] = mul(_UNITY_MATRIX_MVP, boxCorners[i]);
-		//判断是否在视锥体内
-		if (IsVisibleAfterFrustumCulling(boxCorners[i]))
-			isInFurstum = 1;
-		boxCorners[i].xyz = boxCorners[i].xyz / boxCorners[i].w;
-		float2 uv = boxCorners[i].xy;
-		uv = uv * 0.5 + 0.5;//归一化到0-1
-		uv = 1 - uv;        //反转UV 0-1  to 1-0
-		
-		float depth = _Input.SampleLevel(sampler_Input, uv,0).r;
-		if (depth < boxCorners[i].z)
+		float4 clipPos = mul(_UNITY_MATRIX_VP, boxCorners[i]);
+		if (IsVisibleAfterFrustumCulling(clipPos))
+			isInFrustum = 1;
+		clipPos.xyz = clipPos.xyz / clipPos.w;
+		clipMinX = min(clipPos.x, clipMinX);
+		clipMaxX = max(clipPos.x, clipMaxX);
+		clipMinY = min(clipPos.y, clipMinY);
+		clipMaxY = max(clipPos.y, clipMaxY);
+		clipMinZ = min(clipPos.z, clipMinZ);
+
+		float2 uv = float2(clipPos.x *0.5 + 0.5, clipPos.y *0.5 + 0.5);
+		float depth = _DepthTexture.SampleLevel(sampler_DepthTexture, uv, 0).r;
+		if (depth < 1 - clipPos.z)
 		{
-			allDisable = 0;
+			isHasViable = 1;
 		}
 	}
-	if (!isInFurstum)
-		isVisable = 0;
 
-	if (allDisable)
+	if (!isInFrustum)
 	{
-		isVisable = 0;
+		_IsVisable[index] = 0;
 	}
-
-	//细节裁剪，剔除占屏幕像素较少的物体
-	if (isVisable)
+	else
 	{
-		isVisable = GetDetailVisable(minPos,maxPos);
+		if (IsVisibleAfterOcclusionCulling(data, clipMinX, clipMaxX, clipMinY, clipMaxY, clipMinZ))
+		{
+			if (!GetDetailVisable(minPos, maxPos))
+			{
+				_IsVisable[index] = 0;
+			}
+			else
+			{
+				_IsVisable[index] = 1;
+			}
+		}
+		else
+		{
+			_IsVisable[index] = 0;
+		}
+		/*if (isHasViable)
+		{
+			if (!GetDetailVisable(minPos, maxPos))
+			{
+				_IsVisable[index] = 0;
+			}
+			else
+			{
+				_IsVisable[index] = 1;
+			}
+
+		}
+		else
+		{
+			_IsVisable[index] = 0;
+		}*/
 	}
-
-	_IsVisable[id] = isVisable;
-
-	float2 xy = float2(_groupID.x, _groupID.y)+ _dispatchThreadID.xy;
-	_Result[xy] =  float4(_dispatchThreadID.x & _dispatchThreadID.y, (_dispatchThreadID.x & 15) / 15.0, (_dispatchThreadID.y & 15) / 15.0, 0.0);
-} 
+}

@@ -1,5 +1,7 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using UnityEngine;
 
@@ -7,51 +9,41 @@ public class OcCalculate : MonoBehaviour
 {
 	// Start is called before the first frame update
 	public ComputeShader m_OcCaluteCS;
-	public Camera m_mainCamera;
-	[Range(0,2)]
-	public float m_DetailSize=0.1f;
+	public DepthTexture m_depthTexture;
+	public Camera m_MainCamera;
+	[Range(0, 1)]
+	public float m_DetailSize = 0.01f;
 
-	public DepthTexture m_DepthTexture;
+	// Shader Property ID's
+	private static readonly int _ResutlID = Shader.PropertyToID("Result");
+	private static readonly int _DepthTextureID = Shader.PropertyToID("_DepthTexture");
+	private static readonly int _DepthID = Shader.PropertyToID("_Depth");
+	private static readonly int _InstanceDataID = Shader.PropertyToID("_InstanceData");
+	private static readonly int _MatrixVPID = Shader.PropertyToID("_UNITY_MATRIX_VP");
+	private static readonly int _VisableID = Shader.PropertyToID("_IsVisable");
+	private static readonly int _DetailSizeID = Shader.PropertyToID("_DetailSize");
+	private static readonly int _TextureSize = Shader.PropertyToID("_HiZTextureSize");
+	//
+	private ComputeBuffer m_depthBuffer;
+	private ComputeBuffer m_boundsBuffer;
+	private ComputeBuffer m_visableBuffer;
 
-	ComputeBuffer m_OcBundsBuffer;
-	ComputeBuffer m_boundsIsVisableBuffer;
-	ComputeBuffer m_TestBuffer;
 	//kernel ID
 	private int m_OcCaluteKernelID;
 
-	// Shader Property ID's
-	private static readonly int _InstanceDataBufferID = Shader.PropertyToID("_InstanceDataBuffer");
-	private static readonly int _InputTextueID = Shader.PropertyToID("_Input");
-	private static readonly int _InstanceTextureID = Shader.PropertyToID("_Result");
-	private static readonly int _CamPosID = Shader.PropertyToID("_CamPosition");
-	private static readonly int _IsVisableID = Shader.PropertyToID("_IsVisable");
-	private static readonly int _MVPMatrixID = Shader.PropertyToID("_UNITY_MATRIX_MVP");
-	private static readonly int _DetailSizeID = Shader.PropertyToID("_DetailSize");
-	private static readonly int _GropuID = Shader.PropertyToID("_adfafdasdf");
+	//
+	private float[] m_depthArr;
+	private uint[] m_isVisableArr;
 
-	//Constants
-	private const int THREAD_GROUP_SIZE = 32;
-	private const int TEX_SIZE = 512;
-
-	private RenderTexture m_OutPutTexture;
-	private int[] m_IsVisableData;
-	private int m_InstanceCount;
-	private Matrix4x4 m_mvp;
 	private bool m_isFirstFrame = true;
-
-	private uint[] m_outputGroup;
-
 	void Start()
 	{
-
-		m_OutPutTexture = new RenderTexture(TEX_SIZE,TEX_SIZE,24);
-		m_OutPutTexture.enableRandomWrite = true;
-		m_OutPutTexture.Create();
-		m_outputGroup = new uint[1024*3];
-		for (int i = 0; i < m_outputGroup.Length; i++)
+		m_depthArr = new float[16];
+		for (int i = 0; i < m_depthArr.Length; i++)
 		{
-			m_outputGroup[i] = 0;
+			m_depthArr[i] = 0.0f;
 		}
+
 	}
 
 	// Update is called once per frame
@@ -62,69 +54,63 @@ public class OcCalculate : MonoBehaviour
 			m_isFirstFrame = false;
 			return;
 		}
-		if (InitEnvirmonent.m_boundsInput == null)
+
+		if (m_depthTexture.Texture == null)
 			return;
 
-		m_InstanceCount = InitEnvirmonent.m_boundsInput.Count;
-		Matrix4x4 viewPro = m_mainCamera.worldToCameraMatrix;
-		Matrix4x4 project = m_mainCamera.projectionMatrix;
-		m_mvp = project * viewPro;
+		Matrix4x4 view = m_MainCamera.worldToCameraMatrix;
+		Matrix4x4 proj = m_MainCamera.projectionMatrix;
+		Matrix4x4 vp = proj * view;
 
-		if (m_OcBundsBuffer == null)
+		if (m_depthBuffer == null)
 		{
 			int boundsSize = Marshal.SizeOf(typeof(InitEnvirmonent.BoundsInput));
-			m_OcBundsBuffer = new ComputeBuffer(InitEnvirmonent.m_boundsInput.Count, boundsSize, ComputeBufferType.Default);
-			m_boundsIsVisableBuffer = new ComputeBuffer(InitEnvirmonent.m_boundsIsVisable.Count, sizeof(uint), ComputeBufferType.Default);
-			m_TestBuffer = new ComputeBuffer(m_outputGroup.Length,sizeof(uint),ComputeBufferType.Default);
-
+			m_depthBuffer = new ComputeBuffer(m_depthArr.Length, sizeof(float), ComputeBufferType.Default);
+			m_boundsBuffer = new ComputeBuffer(InitEnvirmonent.m_sBoundsInput.Count, boundsSize, ComputeBufferType.Default);
+			m_visableBuffer = new ComputeBuffer(InitEnvirmonent.m_sBoundsIsVisable.Capacity, sizeof(uint), ComputeBufferType.Default);
 		}
+
 		if (TryGetKernels())
 		{
-			
-			m_OcBundsBuffer.SetData(InitEnvirmonent.m_boundsInput);
-			m_boundsIsVisableBuffer.SetData(InitEnvirmonent.m_boundsIsVisable);
-			m_TestBuffer.SetData(m_outputGroup);
-
-			m_OcCaluteCS.SetVector(_CamPosID,m_DepthTexture.CamPos);
-			m_OcCaluteCS.SetBuffer(m_OcCaluteKernelID, _InstanceDataBufferID, m_OcBundsBuffer);
-			m_OcCaluteCS.SetBuffer(m_OcCaluteKernelID,_IsVisableID,m_boundsIsVisableBuffer);
-			m_OcCaluteCS.SetFloat(_DetailSizeID,m_DetailSize);
-			m_OcCaluteCS.SetMatrix(_MVPMatrixID, m_mvp);
-			m_OcCaluteCS.SetTexture(m_OcCaluteKernelID, _InputTextueID, m_DepthTexture.Texture);
-			m_OcCaluteCS.SetTexture(m_OcCaluteKernelID,_InstanceTextureID, m_OutPutTexture);
-			m_OcCaluteCS.SetBuffer(m_OcCaluteKernelID,_GropuID, m_TestBuffer);
-			m_OcCaluteCS.Dispatch(m_OcCaluteKernelID, 8,8, 1);
+			System.Diagnostics.Stopwatch beforeTime = new System.Diagnostics.Stopwatch();
+			beforeTime.Start();
+			m_boundsBuffer.SetData(InitEnvirmonent.m_sBoundsInput);
+			m_visableBuffer.SetData(InitEnvirmonent.m_sBoundsIsVisable);
+			m_OcCaluteCS.SetMatrix(_MatrixVPID, vp);
+			m_OcCaluteCS.SetFloat(_DetailSizeID, m_DetailSize);
+			m_OcCaluteCS.SetBuffer(m_OcCaluteKernelID, _InstanceDataID, m_boundsBuffer);
+			m_OcCaluteCS.SetBuffer(m_OcCaluteKernelID, _DepthID, m_depthBuffer);
+			m_OcCaluteCS.SetBuffer(m_OcCaluteKernelID, _VisableID, m_visableBuffer);
+			m_OcCaluteCS.SetTexture(m_OcCaluteKernelID, _DepthTextureID, m_depthTexture.Texture);
+			m_OcCaluteCS.SetVector(_DepthTextureID, m_depthTexture.TextureSize);
+			m_OcCaluteCS.Dispatch(m_OcCaluteKernelID, 4, 1, 1);
+			// m_OcCaluteCS.SetBuffer();
+			beforeTime.Stop();
+			// UnityEngine.Debug.Log(beforeTime.ElapsedMilliseconds);
 		}
-		if (m_IsVisableData == null)
+		if (m_isVisableArr == null)
 		{
-			m_IsVisableData = new int[m_InstanceCount];
-			for (int i = 0; i < m_IsVisableData.Length; i++)
-			{
-				m_IsVisableData[i] = 1;
-			}
+			m_isVisableArr = new uint[InitEnvirmonent.m_sBoundsInput.Count];
 		}
-		m_boundsIsVisableBuffer.GetData(m_IsVisableData);
-		m_TestBuffer.GetData(m_outputGroup);
-		for (int i = 0; i < m_outputGroup.Length; i++)
+		m_depthBuffer.GetData(m_depthArr);
+		m_visableBuffer.GetData(m_isVisableArr);
+		for (int i = 0; i < m_depthArr.Length; i++)
 		{
-			if (m_outputGroup[i] != 0)
+			if (m_depthArr[i] != 0)
 			{
-				//Debug.Log(m_outputGroup[i]);
+				UnityEngine.Debug.Log(m_depthArr[i] + " " + i);
 			}
 		}
 
-
-		for (int i = 0; i < m_IsVisableData.Length; i++)
+		for (int i = 0; i < m_isVisableArr.Length; i++)
 		{
-			if (m_IsVisableData[i] == 0)
+			if (m_isVisableArr[i] != 0)
 			{
-				InitEnvirmonent.m_gameObj[i].SetActive(false);
-				//Debug.Log("Disable");
+				InitEnvirmonent.m_sGameObj[i].SetActive(true);
 			}
 			else
 			{
-				InitEnvirmonent.m_gameObj[i].SetActive(true);
-				//Debug.Log("Enable");
+				InitEnvirmonent.m_sGameObj[i].SetActive(false);
 			}
 		}
 	}
@@ -138,17 +124,11 @@ public class OcCalculate : MonoBehaviour
 	{
 		if (!cs.HasKernel(kernelName))
 		{
-			Debug.LogError(kernelName + " kernel not found in " + cs.name + "!");
+			UnityEngine.Debug.LogError(kernelName + " kernel not found in " + cs.name + "!");
 			return false;
 		}
 
 		kernelID = cs.FindKernel(kernelName);
 		return true;
 	}
-
-
-	//private void OnRenderImage(RenderTexture source, RenderTexture destination)
-	//{
-	//	Graphics.Blit(m_OutPutTexture, destination);
-	//}
 }
